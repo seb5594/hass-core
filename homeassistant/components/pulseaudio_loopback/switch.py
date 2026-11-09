@@ -1,6 +1,7 @@
 """Switch logic for loading/unloading pulseaudio loopback modules."""
 
 import logging
+import shlex
 from typing import Any, override
 
 import probatio
@@ -70,6 +71,15 @@ def setup_platform(
     add_entities([PALoopbackSwitch(name, server, sink_name, source_name)], True)
 
 
+def _parse_module_arguments(argument: str | None) -> dict[str, str]:
+    """Split a PulseAudio module argument string into its key/value pairs."""
+    try:
+        tokens = shlex.split(argument or "")
+    except ValueError:
+        return {}
+    return dict(token.split("=", 1) for token in tokens if "=" in token)
+
+
 class PALoopbackSwitch(SwitchEntity):
     """Representation the presence or absence of a PA loopback module."""
 
@@ -89,13 +99,12 @@ class PALoopbackSwitch(SwitchEntity):
                 if module.name != "module-loopback":
                     continue
 
-                if f"sink={self._sink_name}" not in module.argument:
-                    continue
-
-                if f"source={self._source_name}" not in module.argument:
-                    continue
-
-                return module.index
+                arguments = _parse_module_arguments(module.argument)
+                if (
+                    arguments.get("sink") == self._sink_name
+                    and arguments.get("source") == self._source_name
+                ):
+                    return module.index
 
         except PulseError:
             return None
