@@ -3,6 +3,25 @@
 #
 # To update, run python3 -m script.hassfest -p docker
 ARG BUILD_FROM
+
+# Architectures without prebuilt musl wheels compile their requirements here
+FROM ${BUILD_FROM} AS wheels-builder
+ARG BUILD_ARCH
+COPY --parents requirements.txt homeassistant/package_constraints.txt homeassistant/
+COPY requirements_all.txt homeassistant/
+RUN \
+    case "${BUILD_ARCH}" in \
+        amd64|aarch64) mkdir /wheels ;; \
+        *) apk add --no-cache \
+                build-base cargo cmake linux-headers \
+                libffi-dev openssl-dev jpeg-dev zlib-dev freetype-dev \
+                libxml2-dev libxslt-dev mariadb-dev postgresql-dev \
+        && pip3 wheel --wheel-dir /wheels \
+                -c homeassistant/homeassistant/package_constraints.txt \
+                -r homeassistant/requirements.txt \
+                -r homeassistant/requirements_all.txt ;; \
+    esac
+
 FROM ${BUILD_FROM}
 
 LABEL \
@@ -31,21 +50,25 @@ COPY --from=ghcr.io/alexxit/go2rtc:1.9.15@sha256:e098de5c2f8040dc3d4784ed2d5cfda
 ## Setup Home Assistant Core dependencies
 COPY --parents requirements.txt homeassistant/package_constraints.txt homeassistant/
 RUN \
+    --mount=type=bind,from=wheels-builder,source=/wheels,target=/wheels \
     # Verify go2rtc can be executed
     go2rtc --version \
     # Install uv at the version pinned in the requirements file
     && pip3 install --no-cache-dir "uv==$(awk -F'==' '/^uv==/{print $2}' homeassistant/requirements.txt)" \
     && uv pip install \
         --no-build \
+        --find-links /wheels \
         -r homeassistant/requirements.txt
 
 COPY requirements_all.txt home_assistant_frontend-* home_assistant_intents-* homeassistant/
 RUN \
+    --mount=type=bind,from=wheels-builder,source=/wheels,target=/wheels \
     if ls homeassistant/home_assistant_*.whl 1> /dev/null 2>&1; then \
         uv pip install homeassistant/home_assistant_*.whl; \
     fi \
     && uv pip install \
         --no-build \
+        --find-links /wheels \
         -r homeassistant/requirements_all.txt
 
 ## Setup Home Assistant Core

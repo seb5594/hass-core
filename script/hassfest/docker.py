@@ -40,6 +40,15 @@ class _MachineConfig:
 
 _MACHINES = {
     "generic-x86-64": _MachineConfig(arch="amd64", packages=("libva-intel-driver",)),
+    "intel-nuc": _MachineConfig(arch="amd64", packages=("libva-intel-driver",)),
+    "odroid-xu": _MachineConfig(arch="armv7"),
+    "qemuarm": _MachineConfig(arch="armv7"),
+    "qemux86": _MachineConfig(arch="i386"),
+    "raspberrypi": _MachineConfig(arch="armhf", packages=("raspberrypi-utils",)),
+    "raspberrypi2": _MachineConfig(arch="armv7", packages=("raspberrypi-utils",)),
+    "raspberrypi3": _MachineConfig(arch="armv7", packages=("raspberrypi-utils",)),
+    "raspberrypi4": _MachineConfig(arch="armv7", packages=("raspberrypi-utils",)),
+    "tinker": _MachineConfig(arch="armv7"),
     "green": _MachineConfig(arch="aarch64"),
     "khadas-vim3": _MachineConfig(arch="aarch64"),
     "odroid-c2": _MachineConfig(arch="aarch64"),

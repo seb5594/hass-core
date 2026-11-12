@@ -16,11 +16,16 @@ env:
   # Base image version from https://github.com/home-assistant/docker
   # If python version changes in the base image, update .python-version accordingly to match the new Python version.
   BASE_IMAGE_VERSION: "2026.10.3"
-  ARCHITECTURES: '["amd64", "aarch64"]'
+  ARCHITECTURES: '["amd64", "aarch64", "armv7", "armhf", "i386"]'
+  # Architectures and machines that get a boot check, the others run under emulation only
+  NATIVE_ARCHITECTURES: '["amd64", "aarch64"]'
   MACHINES: >-
     ["generic-x86-64", "khadas-vim3", "odroid-c2", "odroid-c4", "odroid-m1",
     "odroid-n2", "qemuarm-64", "qemux86-64", "raspberrypi3-64",
     "raspberrypi4-64", "raspberrypi5-64", "yellow", "green"]
+  LEGACY_MACHINES: >-
+    ["intel-nuc", "odroid-xu", "qemuarm", "qemux86", "raspberrypi",
+    "raspberrypi2", "raspberrypi3", "raspberrypi4", "tinker"]
 
 permissions: {}
 
@@ -31,7 +36,7 @@ concurrency:
 jobs:
   init:
     name: Initialize build
-    if: github.repository_owner == 'home-assistant'
+    if: github.repository_owner == 'seb5594'
     runs-on: ubuntu-26.04
     permissions:
       contents: read # To check out the repository
@@ -40,7 +45,9 @@ jobs:
       channel: ${{ steps.version.outputs.channel }}
       publish: ${{ steps.version.outputs.publish }}
       architectures: ${{ env.ARCHITECTURES }}
+      native_architectures: ${{ env.NATIVE_ARCHITECTURES }}
       machines: ${{ env.MACHINES }}
+      all_machines: ${{ steps.machines.outputs.all }}
       base_image_version: ${{ env.BASE_IMAGE_VERSION }}
     steps:
       - name: Checkout the repository
@@ -58,6 +65,10 @@ jobs:
         uses: home-assistant/actions/helpers/version@master # zizmor: ignore[unpinned-uses]
         with:
           type: ${{ env.BUILD_TYPE }}
+
+      - name: Merge machine lists
+        id: machines
+        run: echo "all=$(jq -c -n --argjson a "${MACHINES}" --argjson b "${LEGACY_MACHINES}" '$a + $b')" >> "$GITHUB_OUTPUT"
 
       - name: Verify version
         uses: home-assistant/actions/helpers/verify-version@master # zizmor: ignore[unpinned-uses]
@@ -90,7 +101,7 @@ jobs:
 
   build_base:
     name: Build ${{ matrix.arch }} base core image
-    if: github.repository_owner == 'home-assistant'
+    if: github.repository_owner == 'seb5594'
     needs: init
     runs-on: ${{ matrix.os }}
     permissions:
@@ -104,8 +115,19 @@ jobs:
         include:
           - arch: amd64
             os: ubuntu-26.04
+            platform: linux/amd64
           - arch: aarch64
             os: ubuntu-26.04-arm
+            platform: linux/arm64
+          - arch: armv7
+            os: ubuntu-26.04-arm
+            platform: linux/arm/v7
+          - arch: armhf
+            os: ubuntu-26.04-arm
+            platform: linux/arm/v6
+          - arch: i386
+            os: ubuntu-26.04
+            platform: linux/386
     steps:
       - name: Checkout the repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -199,23 +221,24 @@ jobs:
           echo "${GITHUB_SHA};${GITHUB_REF};${GITHUB_EVENT_NAME};${GITHUB_ACTOR}" > rootfs/OFFICIAL_IMAGE
 
       - name: Build base image
-        uses: home-assistant/builder/actions/build-image@7412f0023ea9b6e58e8bb5059f1660f51376f49a # 2026.09.0
+        uses: seb5594/home-assistant_builder/actions/build-image@master
         with:
           arch: ${{ matrix.arch }}
+          platform: ${{ matrix.platform }}
           build-args: |
-            BUILD_FROM=ghcr.io/home-assistant/${{ matrix.arch }}-homeassistant-base:${{ needs.init.outputs.base_image_version }}
+            BUILD_FROM=ghcr.io/seb5594/${{ matrix.arch }}-homeassistant-base:${{ needs.init.outputs.base_image_version }}
           cache-gha: false
           container-registry-password: ${{ secrets.GITHUB_TOKEN }}
-          cosign-base-identity: "https://github.com/home-assistant/docker/.*"
-          cosign-base-verify: ghcr.io/home-assistant/${{ matrix.arch }}-homeassistant-base:${{ needs.init.outputs.base_image_version }}
-          image: ghcr.io/home-assistant/${{ matrix.arch }}-homeassistant
+          cosign-base-identity: "https://github.com/seb5594/.*"
+          cosign-base-verify: ghcr.io/seb5594/${{ matrix.arch }}-homeassistant-base:${{ needs.init.outputs.base_image_version }}
+          image: ghcr.io/seb5594/${{ matrix.arch }}-homeassistant
           image-tags: ${{ needs.init.outputs.version }}
           push: true
           version: ${{ needs.init.outputs.version }}
 
   build_machine:
     name: Build ${{ matrix.machine }} machine core image
-    if: github.repository_owner == 'home-assistant'
+    if: github.repository_owner == 'seb5594'
     needs: ["init", "build_base"]
     runs-on: ${{ matrix.runs-on }}
     permissions:
@@ -224,18 +247,58 @@ jobs:
       id-token: write # For cosign signing
     strategy:
       matrix:
-        machine: ${{ fromJson(needs.init.outputs.machines) }}
+        machine: ${{ fromJson(needs.init.outputs.all_machines) }}
         include:
           # Default: aarch64 on native ARM runner
           - arch: aarch64
             runs-on: ubuntu-26.04-arm
+            platform: linux/arm64
           # Overrides for amd64 machines
           - machine: generic-x86-64
             arch: amd64
             runs-on: ubuntu-26.04
+            platform: linux/amd64
           - machine: qemux86-64
             arch: amd64
             runs-on: ubuntu-26.04
+            platform: linux/amd64
+          - machine: intel-nuc
+            arch: amd64
+            runs-on: ubuntu-26.04
+            platform: linux/amd64
+          # Overrides for 32-bit machines, ARM ones are emulated
+          - machine: qemux86
+            arch: i386
+            runs-on: ubuntu-26.04
+            platform: linux/386
+          - machine: raspberrypi
+            arch: armhf
+            runs-on: ubuntu-26.04-arm
+            platform: linux/arm/v6
+          - machine: raspberrypi2
+            arch: armv7
+            runs-on: ubuntu-26.04-arm
+            platform: linux/arm/v7
+          - machine: raspberrypi3
+            arch: armv7
+            runs-on: ubuntu-26.04-arm
+            platform: linux/arm/v7
+          - machine: raspberrypi4
+            arch: armv7
+            runs-on: ubuntu-26.04-arm
+            platform: linux/arm/v7
+          - machine: qemuarm
+            arch: armv7
+            runs-on: ubuntu-26.04-arm
+            platform: linux/arm/v7
+          - machine: tinker
+            arch: armv7
+            runs-on: ubuntu-26.04-arm
+            platform: linux/arm/v7
+          - machine: odroid-xu
+            arch: armv7
+            runs-on: ubuntu-26.04-arm
+            platform: linux/arm/v7
     steps:
       - name: Checkout the repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -257,18 +320,19 @@ jobs:
           fi
 
       - name: Build machine image
-        uses: home-assistant/builder/actions/build-image@7412f0023ea9b6e58e8bb5059f1660f51376f49a # 2026.09.0
+        uses: seb5594/home-assistant_builder/actions/build-image@master
         with:
           arch: ${{ matrix.arch }}
+          platform: ${{ matrix.platform }}
           build-args: |
-            BUILD_FROM=ghcr.io/home-assistant/${{ matrix.arch }}-homeassistant:${{ needs.init.outputs.version }}
+            BUILD_FROM=ghcr.io/seb5594/${{ matrix.arch }}-homeassistant:${{ needs.init.outputs.version }}
           cache-gha: false
           container-registry-password: ${{ secrets.GITHUB_TOKEN }}
           context: machine/
-          cosign-base-identity: "https://github.com/home-assistant/core/.*"
-          cosign-base-verify: ghcr.io/home-assistant/${{ matrix.arch }}-homeassistant:${{ needs.init.outputs.version }}
+          cosign-base-identity: "https://github.com/seb5594/hass-core/.*"
+          cosign-base-verify: ghcr.io/seb5594/${{ matrix.arch }}-homeassistant:${{ needs.init.outputs.version }}
           file: machine/${{ matrix.machine }}
-          image: ghcr.io/home-assistant/${{ matrix.machine }}-homeassistant
+          image: ghcr.io/seb5594/${{ matrix.machine }}-homeassistant
           image-tags: |
             ${{ needs.init.outputs.version }}
             ${{ steps.tags.outputs.extra_tags }}
@@ -277,16 +341,16 @@ jobs:
 
   run_e2e_tests_base:
     name: Run E2E tests on base images
-    if: github.repository_owner == 'home-assistant'
+    if: github.repository_owner == 'seb5594'
     needs: ["init", "build_base"]
     uses: $/.github/workflows/e2e-tests.yml
     with:
       version: ${{ needs.init.outputs.version }}
-      image_prefixes: ${{ needs.init.outputs.architectures }}
+      image_prefixes: ${{ needs.init.outputs.native_architectures }}
 
   run_e2e_tests_machine:
     name: Run E2E tests on machine images
-    if: github.repository_owner == 'home-assistant'
+    if: github.repository_owner == 'seb5594'
     needs: ["init", "build_machine"]
     uses: $/.github/workflows/e2e-tests.yml
     with:
@@ -296,7 +360,7 @@ jobs:
   publish_ha:
     name: Publish version files
     environment: ${{ needs.init.outputs.channel }}
-    if: github.repository_owner == 'home-assistant'
+    if: github.repository_owner == 'seb5594'
     needs: ["init", "build_machine", "run_e2e_tests_machine"]
     runs-on: ubuntu-26.04
     permissions:
@@ -307,36 +371,34 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Initialize git
-        uses: home-assistant/actions/helpers/git-init@master # zizmor: ignore[unpinned-uses]
-        with:
-          name: ${{ secrets.GIT_NAME }}
-          email: ${{ secrets.GIT_EMAIL }}
-          token: ${{ secrets.GIT_TOKEN }}
+      - name: Update version files
+        env:
+          GH_TOKEN: ${{ secrets.SYNC_TOKEN }}
+          VERSION: ${{ needs.init.outputs.version }}
+          CHANNEL: ${{ needs.init.outputs.channel }}
+        run: |
+          git clone --depth 1 "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY_OWNER}/home-assistant_version.git" version
+          cd version
 
-      - name: Update version file
-        uses: home-assistant/actions/helpers/version-push@master # zizmor: ignore[unpinned-uses]
-        with:
-          key: "homeassistant[]"
-          key-description: "Home Assistant Core"
-          version: ${{ needs.init.outputs.version }}
-          channel: ${{ needs.init.outputs.channel }}
-          exclude-list: '["odroid-xu","qemuarm","qemux86","raspberrypi","raspberrypi2","raspberrypi3","raspberrypi4","tinker"]'
+          channels=("${CHANNEL}")
+          if [[ "${CHANNEL}" == "stable" ]]; then
+            channels+=("beta")
+          fi
+          for channel in "${channels[@]}"; do
+            jq --arg version "${VERSION}" '.homeassistant |= with_entries(.value = $version)' \
+              "${channel}.json" > "${channel}.json.tmp"
+            mv "${channel}.json.tmp" "${channel}.json"
+          done
 
-      - name: Update version file (stable -> beta)
-        if: needs.init.outputs.channel == 'stable'
-        uses: home-assistant/actions/helpers/version-push@master # zizmor: ignore[unpinned-uses]
-        with:
-          key: "homeassistant[]"
-          key-description: "Home Assistant Core"
-          version: ${{ needs.init.outputs.version }}
-          channel: beta
-          exclude-list: '["odroid-xu","qemuarm","qemux86","raspberrypi","raspberrypi2","raspberrypi3","raspberrypi4","tinker"]'
+          git config user.name "${GITHUB_REPOSITORY_OWNER}"
+          git config user.email "${GITHUB_REPOSITORY_OWNER}@users.noreply.github.com"
+          git commit -am "Bump Home Assistant Core to ${VERSION}"
+          git push
 
   publish_container:
     name: Publish to ${{ matrix.registry }}
     environment: ${{ needs.init.outputs.channel }}
-    if: github.repository_owner == 'home-assistant'
+    if: github.repository_owner == 'seb5594'
     needs: ["init", "build_base", "run_e2e_tests_base"]
     runs-on: ubuntu-26.04
     permissions:
@@ -346,7 +408,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        registry: ["ghcr.io/home-assistant", "docker.io/homeassistant"]
+        registry: ["ghcr.io/seb5594"]
     steps:
       - name: Install Cosign
         uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
@@ -376,8 +438,8 @@ jobs:
             echo "Verifying ${arch} image signature..."
             cosign verify \
               --certificate-oidc-issuer https://token.actions.githubusercontent.com \
-              --certificate-identity-regexp https://github.com/home-assistant/core/.* \
-              "ghcr.io/home-assistant/${arch}-homeassistant:${VERSION}"
+              --certificate-identity-regexp https://github.com/seb5594/hass-core/.* \
+              "ghcr.io/seb5594/${arch}-homeassistant:${VERSION}"
           done
           echo "✓ All images verified successfully"
 
@@ -420,7 +482,7 @@ jobs:
             for attempt in 1 2 3; do
               if docker buildx imagetools create \
                 --tag "docker.io/homeassistant/${arch}-homeassistant:${VERSION}" \
-                "ghcr.io/home-assistant/${arch}-homeassistant:${VERSION}"; then
+                "ghcr.io/seb5594/${arch}-homeassistant:${VERSION}"; then
                 break
               fi
               echo "Attempt ${attempt} failed, retrying in 10 seconds..."
